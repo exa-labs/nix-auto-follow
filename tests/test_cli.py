@@ -254,6 +254,69 @@ def test_check_lock_file_reports_all_violations(
     assert out.count("Node ") == 3
 
 
+def test_check_lock_file_distinct_keys_same_refs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Two different input names disagreeing between the same pair of nodes
+    must both be reported — the fingerprint has to include the input key.
+    """
+    lock = LockFile.from_dict(
+        {
+            "version": 7,
+            "root": "root",
+            "nodes": {
+                "root": {
+                    "inputs": {"x": "x", "y": "y", "a": "a", "b": "b"},
+                },
+                "x": {
+                    "inputs": {"nixpkgs": "a", "utils": "a"},
+                    "original": {"type": "github", "owner": "o", "repo": "x"},
+                    "locked": {
+                        "type": "github",
+                        "owner": "o",
+                        "repo": "x",
+                        "rev": "x",
+                    },
+                },
+                "y": {
+                    "inputs": {"nixpkgs": "b", "utils": "b"},
+                    "original": {"type": "github", "owner": "o", "repo": "y"},
+                    "locked": {
+                        "type": "github",
+                        "owner": "o",
+                        "repo": "y",
+                        "rev": "y",
+                    },
+                },
+                "a": {
+                    "original": {"type": "github", "owner": "o", "repo": "a"},
+                    "locked": {
+                        "type": "github",
+                        "owner": "o",
+                        "repo": "a",
+                        "rev": "1",
+                    },
+                },
+                "b": {
+                    "original": {"type": "github", "owner": "o", "repo": "b"},
+                    "locked": {
+                        "type": "github",
+                        "owner": "o",
+                        "repo": "b",
+                        "rev": "2",
+                    },
+                },
+            },
+        }
+    )
+    assert not check_lock_file(lock)
+    out = capsys.readouterr().out
+    # both `nixpkgs` and `utils` are distinct actionable conflicts on the
+    # same (x, y) pair — neither should be suppressed by the fingerprint.
+    assert "input nixpkgs" in out
+    assert "input utils" in out
+
+
 def test_simple_follow_flake() -> None:
     with open("tests/fixtures/has_follow.json") as f:
         flake_lock = LockFile.from_dict(json.load(f))

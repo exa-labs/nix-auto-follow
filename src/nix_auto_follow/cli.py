@@ -115,7 +115,7 @@ def check_lock_file(flake_lock: LockFile) -> bool:
     at a time. A (node, ref, other_node, other_ref) fingerprint is deduped so
     the output is linear in the number of real conflicts rather than quadratic.
     """
-    seen: set[frozenset[tuple[str, str]]] = set()
+    seen: set[frozenset[tuple[str, str, str]]] = set()
     ok = True
 
     for name, node in flake_lock.nodes.items():
@@ -140,7 +140,13 @@ def check_lock_file(flake_lock: LockFile) -> bool:
                     if flake_lock.nodes[ref] == flake_lock.nodes[other_ref]:
                         continue
 
-                    fingerprint = frozenset(((name, ref), (other_name, other_ref)))
+                    # Fingerprint includes `key` because two distinct input
+                    # names can legitimately disagree in the same pair of
+                    # nodes (e.g. both `nixpkgs` and `utils` forked), and
+                    # each disagreement is actionable separately.
+                    fingerprint = frozenset(
+                        ((name, key, ref), (other_name, other_key, other_ref))
+                    )
                     if fingerprint in seen:
                         continue
                     seen.add(fingerprint)

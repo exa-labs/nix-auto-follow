@@ -186,7 +186,9 @@ def test_get_url_no_original() -> None:
     assert node.get_url() == "<unknown>"
 
 
-def test_check_lock_file_reports_all_violations(capsys) -> None:  # type: ignore[no-untyped-def]
+def test_check_lock_file_reports_all_violations(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """--check emits every disagreeing pair, not just the first one."""
     lock = LockFile.from_dict(
         {

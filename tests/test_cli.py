@@ -127,10 +127,129 @@ from nix_auto_follow.cli import (
             ),
             "sourcehut:~rycee/nmd",
         ),
+        (
+            Node.from_dict(
+                {
+                    "original": {
+                        "type": "tarball",
+                        "url": "https://flakehub.com/f/NixOS/nixpkgs/0.2505",
+                    }
+                }
+            ),
+            "https://flakehub.com/f/NixOS/nixpkgs/0.2505",
+        ),
+        (
+            Node.from_dict(
+                {
+                    "original": {
+                        "type": "file",
+                        "url": "file:///tmp/thing.tar",
+                    }
+                }
+            ),
+            "file:///tmp/thing.tar",
+        ),
+        (
+            Node.from_dict(
+                {
+                    "original": {
+                        "type": "mercurial",
+                        "url": "https://hg.example.com/repo",
+                        "ref": "default",
+                    }
+                }
+            ),
+            "hg+https://hg.example.com/repo/default",
+        ),
     ],
 )
 def test_get_url_for_node(node: Node, expected_url: str) -> None:
     assert node.get_url() == expected_url
+
+
+def test_get_url_tolerates_unknown_type() -> None:
+    """Unknown/future `type` values must fall through to a JSON rendering.
+
+    Crashing mid-report stops the user from seeing any other violations in
+    the same lock, which is strictly worse than a partial URL suggestion.
+    """
+    node = Node.from_dict(
+        {"original": {"type": "some-future-type", "url": "https://x"}}
+    )
+    url = node.get_url()
+    assert "some-future-type" in url
+    assert "https://x" in url
+
+
+def test_get_url_no_original() -> None:
+    node = Node.from_dict({"locked": {"type": "github"}})
+    assert node.get_url() == "<unknown>"
+
+
+def test_check_lock_file_reports_all_violations(capsys) -> None:  # type: ignore[no-untyped-def]
+    """--check emits every disagreeing pair, not just the first one."""
+    lock = LockFile.from_dict(
+        {
+            "version": 7,
+            "root": "root",
+            "nodes": {
+                "root": {
+                    "inputs": {"a": "a", "b": "b", "nixpkgs": "nixpkgs"},
+                },
+                "a": {
+                    "inputs": {"nixpkgs": "nixpkgs_2"},
+                    "original": {"type": "github", "owner": "x", "repo": "a"},
+                    "locked": {
+                        "type": "github",
+                        "owner": "x",
+                        "repo": "a",
+                        "rev": "aaa",
+                    },
+                },
+                "b": {
+                    "inputs": {"nixpkgs": "nixpkgs_3"},
+                    "original": {"type": "github", "owner": "x", "repo": "b"},
+                    "locked": {
+                        "type": "github",
+                        "owner": "x",
+                        "repo": "b",
+                        "rev": "bbb",
+                    },
+                },
+                "nixpkgs": {
+                    "original": {"type": "github", "owner": "nixos", "repo": "nixpkgs"},
+                    "locked": {
+                        "type": "github",
+                        "owner": "nixos",
+                        "repo": "nixpkgs",
+                        "rev": "1",
+                    },
+                },
+                "nixpkgs_2": {
+                    "original": {"type": "github", "owner": "nixos", "repo": "nixpkgs"},
+                    "locked": {
+                        "type": "github",
+                        "owner": "nixos",
+                        "repo": "nixpkgs",
+                        "rev": "2",
+                    },
+                },
+                "nixpkgs_3": {
+                    "original": {"type": "github", "owner": "nixos", "repo": "nixpkgs"},
+                    "locked": {
+                        "type": "github",
+                        "owner": "nixos",
+                        "repo": "nixpkgs",
+                        "rev": "3",
+                    },
+                },
+            },
+        }
+    )
+    assert not check_lock_file(lock)
+    out = capsys.readouterr().out
+    # three different revs => three disagreeing pairs (1v2, 1v3, 2v3)
+    assert out.count("Node ") == 3
 
 
 def test_simple_follow_flake() -> None:

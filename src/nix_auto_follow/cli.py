@@ -36,30 +36,34 @@ class Node:
             return {"inputs": self.inputs, **self.remaining}
 
     def get_url(self) -> str:
-        """
-        Should reconstruct the Flake URL for the given Node.
+        """Reconstruct a best-effort Flake URL for this node's ``original`` block.
 
-        @see https://nix.dev/manual/nix/2.22/command-ref/new-cli/nix3-flake#types
+        Unknown or partially-specified ``type`` values fall through to a generic
+        JSON rendering rather than raising, because :meth:`get_url` is only used
+        to build human-readable suggestions in ``--check`` output — a degraded
+        URL is strictly better than a crashed pipeline that stops reporting
+        violations partway through a lock.
+
+        @see https://nix.dev/manual/nix/latest/command-ref/new-cli/nix3-flake#types
         """
         if "original" not in self.remaining:
-            raise ValueError("Node does not have a locked attribute.")
+            return "<unknown>"
         original = self.remaining["original"]
         ref = f"/{original['ref']}" if "ref" in original else ""
         rev = f"/{original['rev']}" if "rev" in original else ""
         rev_or_ref = next((x for x in [rev, ref] if x), "")
 
-        match original["type"]:
+        match original.get("type"):
             case "git":
-                base_url = f"git+{original['url']}"
+                base_url = f"git+{original.get('url', '')}"
                 filtered_params = {
                     k: (1 if v is True else 0 if v is False else v)
                     for k, v in original.items()
-                    if k in ["rev", "ref", "submodules", "shallow"]
+                    if k in ("rev", "ref", "submodules", "shallow")
                     and v not in (None, "")
                 }
                 query_string = urlencode(filtered_params)
-                full_url = f"{base_url}?{query_string}" if query_string else base_url
-                return full_url
+                return f"{base_url}?{query_string}" if query_string else base_url
             case "github":
                 return f"github:{original['owner']}/{original['repo']}{rev_or_ref}"
             case "gitlab":
@@ -70,8 +74,12 @@ class Node:
                 return f"file:{original['path']}"
             case "indirect":
                 return f"{original['id']}{ref}{rev}"
+            case "tarball" | "file":
+                return str(original.get("url", "<unknown>"))
+            case "mercurial":
+                return f"hg+{original.get('url', '')}{rev_or_ref}"
             case _:
-                raise ValueError(f"Unknown type {original['type']}")
+                return json.dumps(original, separators=(",", ":"), sort_keys=True)
 
 
 @dataclass
@@ -100,9 +108,17 @@ class LockFile:
 
 
 def check_lock_file(flake_lock: LockFile) -> bool:
+    """Return True iff no two nodes resolve the same input name differently.
+
+    On failure, *every* disagreeing pair is printed (not just the first) so CI
+    users can remediate a lock in one pass rather than iterating one violation
+    at a time. A (node, ref, other_node, other_ref) fingerprint is deduped so
+    the output is linear in the number of real conflicts rather than quadratic.
+    """
+    seen: set[frozenset[tuple[str, str, str]]] = set()
+    ok = True
 
     for name, node in flake_lock.nodes.items():
-
         if node.inputs is None:
             continue
 
@@ -111,27 +127,39 @@ def check_lock_file(flake_lock: LockFile) -> bool:
                 continue
 
             for other_name, other_node in flake_lock.nodes.items():
-
                 if other_node.inputs is None:
                     continue
 
                 for other_key, other_ref in other_node.inputs.items():
                     if isinstance(other_ref, list):
                         continue
-
                     if key != other_key:
                         continue
+                    if ref == other_ref:
+                        continue
+                    if flake_lock.nodes[ref] == flake_lock.nodes[other_ref]:
+                        continue
 
-                    if flake_lock.nodes[ref] != flake_lock.nodes[other_ref]:
-                        print(
-                            f"Node {name} has input {key} pointing to {ref} which is not the same as {other_name}'s {other_key} which is {other_ref} in the lockfile."  # noqa: E501
-                        )
-                        print(
-                            f"Please add '{key}.url = \"{flake_lock.nodes[ref].get_url()}\"' or '{other_key}.url = \"{flake_lock.nodes[other_ref].get_url()}\"'"  # noqa: E501
-                        )  # noqa: E501
-                        return False
+                    # Fingerprint includes `key` because two distinct input
+                    # names can legitimately disagree in the same pair of
+                    # nodes (e.g. both `nixpkgs` and `utils` forked), and
+                    # each disagreement is actionable separately.
+                    fingerprint = frozenset(
+                        ((name, key, ref), (other_name, other_key, other_ref))
+                    )
+                    if fingerprint in seen:
+                        continue
+                    seen.add(fingerprint)
+                    ok = False
 
-    return True
+                    print(
+                        f"Node {name} has input {key} pointing to {ref} which is not the same as {other_name}'s {other_key} which is {other_ref} in the lockfile."  # noqa: E501
+                    )
+                    print(
+                        f"Please add '{key}.url = \"{flake_lock.nodes[ref].get_url()}\"' or '{other_key}.url = \"{flake_lock.nodes[other_ref].get_url()}\"'"  # noqa: E501
+                    )
+
+    return ok
 
 
 def update_flake_lock(flake_lock: LockFile) -> LockFile:
